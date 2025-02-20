@@ -44,11 +44,7 @@ export async function POST(request: NextRequest) {
       eventId: event.data.id
     }, 'Processing webhook event');
 
-    // Validar que el producto sea el correcto
-    if (
-      parseInt(event.data.attributes.product_id) !==
-      parseInt(process.env.LEMONSQUEEZY_PRODUCT_ID as string)
-    ) {
+    if ( event.data.attributes.product_id !== process.env.LEMONSQUEEZY_PRODUCT_ID ) {
       throw new PaymentServiceError(
         'Invalid product',
         'INVALID_PRODUCT',
@@ -69,7 +65,6 @@ export async function POST(request: NextRequest) {
       case 'subscription_cancelled':
         await handleSubscriptionCancelled(event);
         break;
-      // ... other cases ...
     }
 
     return NextResponse.json({ received: true });
@@ -112,7 +107,6 @@ function verifyWebhookSignature(payload: string, signature: string): boolean {
 }
 
 async function handleOrderCreated(event: WebhookEvent) {
-  // Implementa la lógica para manejar órdenes nuevas
   logger.info({ orderId: event.data.id }, 'New order created');
 }
 
@@ -132,13 +126,9 @@ async function handleSubscriptionCreated(event: WebhookEvent) {
 }
 
 async function handleSubscriptionUpdated(event: WebhookEvent) {
-  // Implementa la lógica para manejar actualizaciones de suscripción
   logger.info({ subscriptionId: event.data.id }, 'Subscription updated');
 }
 
 async function handleSubscriptionCancelled(event: WebhookEvent) {
-  // Implementa la lógica para manejar cancelaciones de suscripción
   logger.info({ subscriptionId: event.data.id }, 'Subscription cancelled');
 }
-
-// ... rest of the handlers ... 

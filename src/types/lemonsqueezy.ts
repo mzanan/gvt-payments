@@ -44,7 +44,14 @@ export const webhookEventSchema = z.object({
   data: z.object({
     id: z.string(),
     type: z.string(),
-    attributes: z.record(z.unknown()),
+    attributes: z.object({
+      product_id: z.union([z.string(), z.number()]),
+      customer_id: z.union([z.string(), z.number()]),
+      user_id: z.union([z.string(), z.number()]),
+      variant_id: z.union([z.string(), z.number()]),
+      renews_at: z.string().datetime().nullable(),
+      status: z.string().optional()
+    }),
     relationships: z.record(z.unknown()).optional(),
   }),
 });
