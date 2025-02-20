@@ -1,16 +1,16 @@
-import pino from 'pino';
-
-const transport = process.env.NODE_ENV !== 'production' 
-  ? {
-      target: 'pino-pretty',
-      options: {
-        colorize: true,
-        ignore: 'pid,hostname',
-      },
+export const logger = {
+  info: (data: any, msg?: string) => {
+    console.log(`[INFO] ${msg || ''}`, data);
+  },
+  error: (data: any, msg?: string) => {
+    console.error(`[ERROR] ${msg || ''}`, data);
+  },
+  warn: (data: any, msg?: string) => {
+    console.warn(`[WARN] ${msg || ''}`, data);
+  },
+  debug: (data: any, msg?: string) => {
+    if (process.env.NODE_ENV !== 'production') {
+      console.debug(`[DEBUG] ${msg || ''}`, data);
     }
-  : undefined;
-
-export const logger = pino({
-  level: process.env.NODE_ENV === 'production' ? 'info' : 'debug',
-  transport: process.env.NODE_ENV !== 'production' ? transport : undefined,
-}); 
+  }
+};

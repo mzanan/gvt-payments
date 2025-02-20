@@ -61,6 +61,8 @@ Creates a new checkout session.
 
 ### Webhook Events
 
+The service handles webhook events at `/api/payments/webhook`. Configure this endpoint in your LemonSqueezy dashboard:
+
 The service handles the following webhook events:
 - `order_created`
 - `order_refunded`

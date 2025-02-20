@@ -20,7 +20,7 @@ export async function middleware(request: NextRequest) {
 
   // Skip auth for token and webhook endpoints
   if (
-    request.nextUrl.pathname === '/api/webhooks/lemonsqueezy' ||
+    request.nextUrl.pathname === '/api/payments/webhook' ||
     request.nextUrl.pathname === '/api/auth/token'
   ) {
     console.log('Skipping auth for:', request.nextUrl.pathname);
@@ -56,4 +56,4 @@ export async function middleware(request: NextRequest) {
 // Configurar las rutas que deben pasar por el middleware
 export const config = {
   matcher: '/api/:path*'
-}; 
+};

@@ -21,7 +21,7 @@ export const checkoutRequestSchema = z.object({
 
 export type CheckoutRequest = z.infer<typeof checkoutRequestSchema>;
 
-// Webhook Event Types
+// Webhook Event Schema
 export const webhookEventSchema = z.object({
   meta: z.object({
     event_name: z.enum([
@@ -45,12 +45,37 @@ export const webhookEventSchema = z.object({
     id: z.string(),
     type: z.string(),
     attributes: z.object({
-      product_id: z.union([z.string(), z.number()]),
-      customer_id: z.union([z.string(), z.number()]),
-      user_id: z.union([z.string(), z.number()]),
-      variant_id: z.union([z.string(), z.number()]),
-      renews_at: z.string().datetime().nullable(),
-      status: z.string().optional()
+      // Common fields - Make these optional since not all events include them
+      product_id: z.union([z.string(), z.number()]).optional(),
+      store_id: z.union([z.string(), z.number()]).optional(),
+      customer_id: z.union([z.string(), z.number()]).optional(),
+      user_id: z.union([z.string(), z.number()]).optional(),
+      variant_id: z.union([z.string(), z.number()]).optional(),
+      status: z.string().optional(),
+      
+      // Order fields
+      order_number: z.number().optional(),
+      total: z.number().optional(),
+      currency: z.string().optional(),
+      billing: z.object({
+        email: z.string(),
+        name: z.string().optional(),
+        country: z.string().optional()
+      }).optional(),
+      
+      // Subscription fields
+      renews_at: z.string().datetime().nullable().optional(),
+      cancelled_at: z.string().datetime().nullable().optional(),
+      pause_starts_at: z.string().datetime().nullable().optional(),
+      pause_resumes_at: z.string().datetime().nullable().optional(),
+      ends_at: z.string().datetime().nullable().optional(),
+      trial_ends_at: z.string().datetime().nullable().optional(),
+      
+      // Payment fields
+      card_brand: z.string().optional(),
+      card_last_four: z.string().optional(),
+      payment_method: z.string().optional(),
+      test_mode: z.boolean().optional(),
     }),
     relationships: z.record(z.unknown()).optional(),
   }),
