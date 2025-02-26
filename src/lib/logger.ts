@@ -1,3 +1,5 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
 export const logger = {
   info: (data: any, msg?: string) => {
     console.log(`[INFO] ${msg || ''}`, data);

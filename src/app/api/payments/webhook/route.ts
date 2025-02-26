@@ -1,255 +1,93 @@
 import { NextRequest, NextResponse } from 'next/server';
-import crypto from 'crypto';
-import { webhookEventSchema, PaymentServiceError, WebhookEvent } from '@/types/lemonsqueezy';
 import { logger } from '@/lib/logger';
+import { updatePaymentStatus } from '@/db/payment';
+import { PaymentStatus } from '@/types/payment';
+import { WebhookEvent } from '@/types/lemonsqueezy';
+import { getOrderId } from '@/store/orderStore';
 
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.text();
-    const signature = request.headers.get('x-signature');
-
-    if (!signature) {
-      throw new PaymentServiceError(
-        'Missing signature header',
-        'MISSING_SIGNATURE',
-        401
-      );
-    }
-
-    if (!verifyWebhookSignature(body, signature)) {
-      throw new PaymentServiceError(
-        'Invalid webhook signature',
-        'INVALID_SIGNATURE',
-        401
-      );
-    }
-
-    const rawEvent = JSON.parse(body);
-    const validatedEvent = webhookEventSchema.safeParse(rawEvent);
-
-    if (!validatedEvent.success) {
-      throw new PaymentServiceError(
-        'Invalid webhook payload',
-        'INVALID_PAYLOAD',
-        400,
-        validatedEvent.error
-      );
-    }
-
-    const event = validatedEvent.data;
+    logger.info({}, '🚨 WEBHOOK RECEIVED 🚨');
     
-    logger.info({
-      eventType: event.meta.event_name,
-      eventId: event.data.id
-    }, 'Processing webhook event');
-
-    // Check product ID only for relevant events
-    if (
-      ['order_created', 'subscription_created', 'subscription_payment_success'].includes(event.meta.event_name) && 
-      event.data.attributes.product_id !== process.env.LEMONSQUEEZY_PRODUCT_ID
-    ) {
-      throw new PaymentServiceError(
-        'Invalid product',
-        'INVALID_PRODUCT',
-        403
-      );
-    }
-
-    let eventResponse;
-
-    switch (event.meta.event_name) {
-      case 'order_created':
-        logger.info({
-          event: 'order_created',
-          orderId: event.data.id,
-          timestamp: new Date().toISOString()
-        }, '🛒 Processing new order');
-        eventResponse = await handleOrderCreated(event);
-        break;
-
-      case 'subscription_created':
-        logger.info({
-          event: 'subscription_created',
-          subscriptionId: event.data.id,
-          customerId: event.data.attributes.customer_id,
-          timestamp: new Date().toISOString()
-        }, '✨ New subscription created');
-        eventResponse = await handleSubscriptionCreated(event);
-        break;
-
-      case 'subscription_updated':
-        logger.info({
-          event: 'subscription_updated',
-          subscriptionId: event.data.id,
-          status: event.data.attributes.status,
-          timestamp: new Date().toISOString()
-        }, '📝 Subscription updated');
-        eventResponse = await handleSubscriptionUpdated(event);
-        break;
-
-      case 'subscription_payment_success':
-        logger.info({
-          event: 'subscription_payment_success',
-          subscriptionId: event.data.id,
-          nextRenewal: event.data.attributes.renews_at,
-          timestamp: new Date().toISOString()
-        }, '💰 Payment successful');
-        eventResponse = await handleSubscriptionPaymentSuccess(event);
-        break;
-
-      case 'subscription_payment_failed':
-        logger.error({
-          event: 'subscription_payment_failed',
-          subscriptionId: event.data.id,
-          timestamp: new Date().toISOString()
-        }, '❌ Payment failed');
-        eventResponse = await handleSubscriptionPaymentFailed(event);
-        break;
-
-      case 'subscription_cancelled':
-        logger.warn({
-          event: 'subscription_cancelled',
-          subscriptionId: event.data.id,
-          timestamp: new Date().toISOString()
-        }, '🚫 Subscription cancelled');
-        eventResponse = await handleSubscriptionCancelled(event);
-        break;
-    }
-
-    return NextResponse.json({ 
-      received: true,
-      event: event.meta.event_name,
-      data: eventResponse 
-    });
+    const body = await request.json();
+    const event = body as WebhookEvent;
     
-  } catch (error) {
-    if (error instanceof PaymentServiceError) {
+    // Extraer identifier_id y numeric_id del webhook
+    const identifier_id = event.data?.attributes?.identifier;
+    const numeric_id = event.data?.id;
+    
+    // Obtener order_id del store global
+    const orderId = getOrderId('1');
+    
+    if (!orderId) {
       logger.error({
-        code: error.code,
-        message: error.message,
-        originalError: error.originalError
-      }, 'Webhook processing failed');
+        flow: 'webhook',
+        stage: 'order_id_missing',
+        identifier_id,
+        numeric_id
+      }, '❌ No se pudo encontrar el order_id en el store global');
       
       return NextResponse.json(
-        { error: error.message, code: error.code },
-        { status: error.statusCode }
+        { error: 'Order ID not found in global store' },
+        { status: 400 }
       );
     }
-
-    logger.error(error, 'Unexpected error processing webhook');
-    return NextResponse.json(
-      { 
-        error: 'Internal server error',
-        code: 'INTERNAL_SERVER_ERROR'
-      },
-      { status: 500 }
-    );
+    
+    logger.info({
+      flow: 'webhook',
+      stage: 'order_id_found',
+      orderId,
+      identifier_id,
+      numeric_id
+    }, '✅ Order ID encontrado en el store global');
+    
+    // Extraer el estado del webhook
+    const status = event.data?.attributes?.status;
+    
+    // Mapear el estado de LemonSqueezy a nuestro sistema
+    let mappedStatus: PaymentStatus;
+    
+    switch(status) {
+      case 'paid':
+      case 'completed':
+      case 'success':
+        mappedStatus = PaymentStatus.PAID;
+        break;
+      case 'refunded':
+      case 'cancelled':
+      case 'canceled':
+      case 'void':
+        mappedStatus = PaymentStatus.VOIDED;
+        break;
+      default:
+        mappedStatus = PaymentStatus.PENDING;
+    }
+    
+    // Actualizar el registro existente con los nuevos IDs
+    await updatePaymentStatus(orderId, mappedStatus, {
+      numeric_id,
+      identifier_id
+    });
+    
+    logger.info({
+      flow: 'webhook',
+      stage: 'status_updated',
+      orderId,
+      numeric_id,
+      identifier_id,
+      status,
+      mappedStatus
+    }, `✅ Registro actualizado con éxito: ${status} → ${mappedStatus}`);
+    
+    return NextResponse.json({ status: 'success' });
+    
+  } catch (error) {
+    logger.error({
+      flow: 'webhook',
+      stage: 'error',
+      error
+    }, '❌ Error procesando webhook');
+    
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
-}
-
-function verifyWebhookSignature(payload: string, signature: string): boolean {
-  const secret = process.env.LEMONSQUEEZY_WEBHOOK_SECRET;
-  if (!secret) throw new Error('LEMONSQUEEZY_WEBHOOK_SECRET is not defined');
-
-  const hmac = crypto.createHmac('sha256', secret);
-  const digest = hmac.update(payload).digest('hex');
-  return crypto.timingSafeEqual(
-    Buffer.from(signature),
-    Buffer.from(digest)
-  );
-}
-
-async function handleOrderCreated(event: WebhookEvent) {
-  const { order_number, total, currency, billing, test_mode } = event.data.attributes;
-  
-  if (!billing?.email) {
-    logger.warn({
-      orderId: event.data.id,
-      orderNumber: order_number,
-      isTestMode: test_mode
-    }, 'Test mode webhook received');
-  }
-
-  logger.info({ 
-    orderId: event.data.id,
-    orderNumber: order_number,
-    total,
-    currency,
-    customerEmail: billing?.email
-  }, 'New order created');
-
-  return {
-    type: 'order.created',
-    orderId: event.data.id,
-    orderNumber: order_number,
-    total,
-    currency,
-    billingInfo: billing ? {
-      email: billing.email,
-      name: billing.name,
-      country: billing.country
-    } : null
-  };
-}
-
-async function handleSubscriptionCreated(event: WebhookEvent) {
-  logger.info({
-    subscriptionId: event.data.id,
-    customerId: event.data.attributes.customer_id,
-    status: 'active'
-  }, 'New subscription created');
-}
-
-async function handleSubscriptionUpdated(event: WebhookEvent) {
-  logger.info({
-    subscriptionId: event.data.id,
-    status: event.data.attributes.status
-  }, 'Subscription updated');
-}
-
-async function handleSubscriptionPaymentSuccess(event: WebhookEvent) {
-  const { renews_at, status, product_id, variant_id } = event.data.attributes;
-  
-  logger.info({
-    subscriptionId: event.data.id,
-    productId: product_id,
-    variantId: variant_id,
-    nextRenewalDate: renews_at,
-    status: 'active'
-  }, 'Subscription payment successful');
-
-  return {
-    type: 'subscription.payment.success',
-    subscriptionId: event.data.id,
-    status: 'active',
-    nextRenewalDate: renews_at,
-    productId: product_id,
-    variantId: variant_id
-  };
-}
-
-async function handleSubscriptionPaymentFailed(event: WebhookEvent) {
-  logger.warn({
-    subscriptionId: event.data.id,
-    status: 'past_due'
-  }, 'Subscription payment failed');
-
-  return {
-    type: 'subscription.payment.failed',
-    subscriptionId: event.data.id,
-    status: 'past_due'
-  };
-}
-
-async function handleSubscriptionCancelled(event: WebhookEvent) {
-  logger.warn({
-    subscriptionId: event.data.id,
-    status: 'cancelled'
-  }, 'Subscription cancelled');
-
-  return {
-    type: 'subscription.cancelled',
-    subscriptionId: event.data.id,
-    status: 'cancelled'
-  };
 }

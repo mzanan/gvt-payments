@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import axios, { AxiosError } from 'axios';
 import { checkoutRequestSchema } from '@/types/lemonsqueezy';
+import { updatePaymentStatus } from '@/db/payment';
+import { PaymentStatus } from '@/types/payment';
+import { storeOrderId } from '@/store/orderStore';
+import { logger } from '@/lib/logger';
 
 export async function POST(request: NextRequest) {
   try {
@@ -27,7 +31,7 @@ export async function POST(request: NextRequest) {
           },
           checkout_data: {
             email: customData.userEmail,
-            name: customData.userName,
+            name: customData.userName
           }
         },
         relationships: {
@@ -60,7 +64,57 @@ export async function POST(request: NextRequest) {
       }
     );
 
-    return NextResponse.json(response.data);
+    const orderId = response.data.data.id;
+    const identifierId = response.data.data.attributes.identifier;
+
+    // Store everything in a single table
+    try {
+      await updatePaymentStatus(
+        orderId,
+        PaymentStatus.PENDING,
+        {
+          identifier_id: identifierId
+        }
+      );
+    } catch (dbError) {
+      console.error('Error updating payment status:', dbError);
+      logger.error({
+        flow: 'checkout',
+        stage: 'db_error',
+        orderId,
+        error: dbError
+      }, '⚠️ Error updating payment status, but continuing with checkout');
+    }
+
+    storeOrderId('1', orderId);
+
+    logger.info({
+      flow: 'checkout',
+      stage: 'created',
+      orderId,
+      timestamp: new Date().toISOString(),
+      checkoutUrl: response.data.data.attributes.url
+    }, '🛒 Checkout created with LemonSqueezy');
+
+    logger.info({
+      flow: 'checkout',
+      stage: 'initialized',
+      orderId,
+      initialStatus: PaymentStatus.PENDING
+    }, '💳 Payment tracking initialized');
+
+    logger.info({
+      flow: 'checkout',
+      stage: 'stored_order_id',
+      orderId
+    }, '💾 OrderId guardado en el store global');
+
+    return NextResponse.json({
+      checkoutUrl: response.data.data.attributes.url,
+      orderId,
+      customData: validatedData.data.customData
+    });
+
   } catch (error) {
     if (error instanceof AxiosError) {
       console.error('LemonSqueezy error:', error.response?.data);

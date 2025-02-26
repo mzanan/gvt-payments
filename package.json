@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@lemonsqueezy/lemonsqueezy.js": "^4.0.0",
+    "@supabase/supabase-js": "^2.49.1",
     "axios": "^1.7.9",
     "cors": "^2.8.5",
     "jose": "^5.9.6",
