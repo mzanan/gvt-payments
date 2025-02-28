@@ -3,7 +3,7 @@ import axios, { AxiosError } from 'axios';
 import { checkoutRequestSchema } from '@/types/lemonsqueezy';
 import { updatePaymentStatus } from '@/db/payment';
 import { PaymentStatus } from '@/types/payment';
-import { storeOrderId } from '@/store/orderStore';
+import { storeOrderId, TIMEOUT_MINUTES } from '@/store/orderStore';
 import { logger } from '@/lib/logger';
 
 export async function POST(request: NextRequest) {
@@ -19,6 +19,10 @@ export async function POST(request: NextRequest) {
     }
 
     const { variantId, customData } = validatedData.data;
+    const timeSlots = [
+      customData.firstSlot?.date,
+      customData.secondSlot?.date
+    ].filter(Boolean) as string[];
     
     const checkoutData = {
       data: {
@@ -67,17 +71,36 @@ export async function POST(request: NextRequest) {
     const orderId = response.data.data.id;
     const identifierId = response.data.data.attributes.identifier;
 
+    // Store with time slots
+    storeOrderId('1', orderId, timeSlots);
+
     // Store everything in a single table
     try {
-      await updatePaymentStatus(
+      const result = await updatePaymentStatus(
         orderId,
         PaymentStatus.PENDING,
         {
           identifier_id: identifierId
         }
       );
+      
+      if (!result.success) {
+        logger.warn({
+          flow: 'checkout',
+          stage: 'db_warning',
+          orderId,
+          error: result.error
+        }, '⚠️ No se pudo actualizar el estado del pago, pero se continuará con el checkout');
+      } else if (result.literalValue || result.minimal) {
+        logger.info({
+          flow: 'checkout',
+          stage: 'db_fallback',
+          orderId,
+          literalValue: result.literalValue,
+          minimal: result.minimal
+        }, '⚠️ Se usó un método alternativo para el registro del pago, pero se continuará con el checkout');
+      }
     } catch (dbError) {
-      console.error('Error updating payment status:', dbError);
       logger.error({
         flow: 'checkout',
         stage: 'db_error',
@@ -85,8 +108,6 @@ export async function POST(request: NextRequest) {
         error: dbError
       }, '⚠️ Error updating payment status, but continuing with checkout');
     }
-
-    storeOrderId('1', orderId);
 
     logger.info({
       flow: 'checkout',
@@ -112,6 +133,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       checkoutUrl: response.data.data.attributes.url,
       orderId,
+      expiresIn: TIMEOUT_MINUTES * 60,
       customData: validatedData.data.customData
     });
 

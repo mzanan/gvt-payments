@@ -1,8 +1,9 @@
 export enum PaymentStatus {
-  PENDING = 'pending',
-  PAID = 'paid',
-  VOID = 'void',
-  REFUNDED = 'refunded'
+  PENDING = 'PENDING',
+  PAID = 'PAID',
+  VOID = 'VOID',
+  REFUNDED = 'REFUNDED',
+  TIMEOUT = 'TIMEOUT'
 }
 
 export type PaymentStatusData = {

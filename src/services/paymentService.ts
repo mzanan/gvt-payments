@@ -32,7 +32,6 @@ export const createCheckout = async (params: CheckoutParams) => {
     return response.data.data.attributes.url;
   } catch (error) {
     if (axios.isAxiosError(error)) {
-      console.error('Raw error response:', error.response?.data);
       const errorMessage = error.response?.data?.error || 'Failed to create checkout';
       throw new Error(errorMessage);
     }

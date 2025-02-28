@@ -51,6 +51,7 @@ export const webhookEventSchema = z.object({
       customer_id: z.union([z.string(), z.number()]).optional(),
       user_id: z.union([z.string(), z.number()]).optional(),
       variant_id: z.union([z.string(), z.number()]).optional(),
+      identifier: z.string().optional(),
       status: z.string().optional(),
       
       // Order fields

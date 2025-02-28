@@ -7,8 +7,7 @@ export async function verifyAuth(token: string): Promise<boolean> {
     await jose.jwtVerify(token, secret);
     return true;
   } catch (error) {
-    console.error('Token verification error:', error);
-    return false;
+    throw new Error('Invalid token ', { cause: error });
   }
 }
 
@@ -20,7 +19,6 @@ export async function generateToken(payload: jose.JWTPayload): Promise<string> {
       .sign(secret);
     return token;
   } catch (error) {
-    console.error('Token generation error:', error);
     throw error;
   }
 }

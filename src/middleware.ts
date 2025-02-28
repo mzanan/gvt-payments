@@ -2,9 +2,6 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { verifyAuth } from '@/lib/auth';
 
 export async function middleware(request: NextRequest) {
-  // Debug: Imprimir la URL que se está procesando
-  console.log('Processing request for:', request.nextUrl.pathname);
-
   // Handle OPTIONS preflight requests
   if (request.method === 'OPTIONS') {
     return new NextResponse(null, {
@@ -23,15 +20,12 @@ export async function middleware(request: NextRequest) {
     request.nextUrl.pathname === '/api/payments/webhook' ||
     request.nextUrl.pathname === '/api/auth/token'
   ) {
-    console.log('Skipping auth for:', request.nextUrl.pathname);
     return NextResponse.next();
   }
 
-  // Get the Authorization header
   const authHeader = request.headers.get('Authorization');
   
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    console.log('Missing or invalid auth header format');
     return NextResponse.json(
       { error: 'Missing or invalid authorization token' },
       { status: 401 }
@@ -39,9 +33,7 @@ export async function middleware(request: NextRequest) {
   }
 
   const token = authHeader.split(' ')[1];
-  
   const isValid = await verifyAuth(token);
-  console.log('Token validation result:', isValid);
 
   if (!isValid) {
     return NextResponse.json(

@@ -21,11 +21,7 @@ export async function GET(request: NextRequest) {
     // Verificación de formato
     const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(orderId);
     const isNumericId = /^\d+$/.test(orderId);
-    
-    console.log('🔍 Verificando pago con LemonSqueezy:');
-    console.log('🆔 orderId:', orderId);
-    console.log('📋 Formato UUID:', isUuid);
-    console.log('📋 Formato numérico:', isNumericId);
+   
     
     logger.info({
       flow: 'payment_verify',
@@ -82,7 +78,7 @@ export async function GET(request: NextRequest) {
       if (status === 'paid' || status === 'completed' || status === 'success') {
         mappedStatus = PaymentStatus.PAID;
       } else if (status === 'refunded' || status === 'cancelled' || status === 'canceled' || status === 'void') {
-        mappedStatus = PaymentStatus.VOIDED;
+        mappedStatus = PaymentStatus.VOID;
       } else {
         mappedStatus = PaymentStatus.PENDING;
       }
