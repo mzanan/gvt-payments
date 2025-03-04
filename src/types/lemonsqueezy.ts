@@ -5,7 +5,6 @@ export const checkoutRequestSchema = z.object({
   variantId: z.string().or(z.number()),
   customData: z.object({
     userEmail: z.string().email(),
-    userName: z.string(),
     frequency: z.enum(['once', 'weekly', 'twice-weekly']),
     duration: z.string(),
     firstSlot: z.object({
@@ -26,18 +25,7 @@ export const webhookEventSchema = z.object({
   meta: z.object({
     event_name: z.enum([
       'order_created',
-      'order_refunded',
-      'subscription_created',
-      'subscription_updated',
-      'subscription_cancelled',
-      'subscription_resumed',
-      'subscription_expired',
-      'subscription_paused',
-      'subscription_unpaused',
-      'subscription_payment_failed',
-      'subscription_payment_success',
-      'license_key_created',
-      'license_key_updated',
+      'order_refunded'
     ]),
     custom_data: z.record(z.unknown()).optional(),
   }),

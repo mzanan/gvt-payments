@@ -8,7 +8,13 @@ import { PaymentStatus } from '@/types/payment';
 interface VerificationCache {
   [orderId: string]: {
     timestamp: number;
-    result: any;
+    result: {
+      success: boolean;
+      orderId: string;
+      originalStatus: string;
+      mappedStatus: string;
+      verifiedAt: string;
+    };
   }
 }
 

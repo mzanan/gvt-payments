@@ -1,6 +1,19 @@
 import { Inter } from 'next/font/google'
+import { configureLogger } from '@/lib/logger';
 
 const inter = Inter({ subsets: ['latin'] })
+
+// Configure logger to reduce verbosity
+configureLogger({
+  minLevel: process.env.NODE_ENV === 'production' ? 'info' : 'warn',
+  enabledFlows: [
+    'api_auth',
+    'security',
+    'error',
+    'payment_status',
+    'checkout'
+  ]
+});
 
 export const metadata = {
   title: 'GVT Payments Service',

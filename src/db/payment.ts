@@ -8,11 +8,6 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY || ''
 );
 
-interface PaymentAdditionalIds {
-  numeric_id?: string;
-  identifier_id?: string;
-}
-
 export async function getPaymentStatus(orderId: string) {
   logger.info({
     flow: 'db_operation',
@@ -377,5 +372,34 @@ export async function findPendingPayments() {
       error
     }, '💥 Excepción en findPendingPayments');
     throw error;
+  }
+}
+
+/**
+ * Finds a payment by order ID
+ * @param orderId The order ID to search for
+ * @returns Payment record or null if not found
+ */
+export async function findPaymentByOrderId(orderId: string) {
+  try {
+    const { data, error } = await supabase
+      .from('payments')
+      .select('*')
+      .eq('order_id', orderId)
+      .single();
+    
+    if (error) {
+      throw error;
+    }
+    
+    return data;
+  } catch (error) {
+    logger.warn({
+      flow: 'db_operation',
+      operation: 'findPaymentByOrderId',
+      error: error instanceof Error ? error.message : String(error)
+    }, `Payment not found for order ID: ${orderId}`);
+    
+    return null;
   }
 }

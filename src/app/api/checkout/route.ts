@@ -1,155 +1,165 @@
+/**
+ * Checkout API endpoint handler
+ * Implements best practices for API design and error handling
+ */
+
 import { NextRequest, NextResponse } from 'next/server';
-import axios, { AxiosError } from 'axios';
-import { checkoutRequestSchema } from '@/types/lemonsqueezy';
-import { updatePaymentStatus } from '@/db/payment';
+import axios from 'axios';
+import { updatePaymentStatus } from '@/db/payments/status';
 import { PaymentStatus } from '@/types/payment';
 import { storeOrderId } from '@/store/orderStore';
 import { logger } from '@/lib/logger';
+import { validateCheckoutRequest, validateCheckoutEnvironment } from './validators';
+import { env } from '@/config/env';
 
+/**
+ * Handles POST requests to create a checkout session
+ */
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    
-    const validatedData = checkoutRequestSchema.safeParse(body);
-    if (!validatedData.success) {
+    const { variantId, customData } = body;
+
+    // Check for required fields
+    if (!variantId) {
+      logger.warn({
+        flow: 'checkout',
+        operation: 'createCheckout',
+        error: 'missing_variant_id'
+      }, 'Missing variant ID in checkout request');
+      
       return NextResponse.json(
-        { error: 'Invalid request data', details: validatedData.error },
+        { error: 'variantId is required' },
         { status: 400 }
       );
     }
 
-    const { variantId, customData } = validatedData.data;
-    const timeSlots = [
-      customData.firstSlot?.date,
-      customData.secondSlot?.date
-    ].filter(Boolean) as string[];
+    logger.info({
+      flow: 'checkout',
+      operation: 'createCheckout',
+      variantId
+    }, 'Creating checkout');
+
+    // Validate environment variables
+    const envValidation = validateCheckoutEnvironment();
+    if (!envValidation.success) {
+      return envValidation.response;
+    }
+
+    // Validate request data
+    const validation = validateCheckoutRequest(body);
+    if (!validation.success) {
+      return validation.response;
+    }
+
+    // Destructure validated data
+    if (!validation.data) {
+      logger.error({
+        flow: 'checkout',
+        operation: 'createCheckout',
+        stage: 'validation',
+        error: 'Missing validated data'
+      }, '❌ Validation data is missing');
+      
+      return NextResponse.json(
+        { error: 'Invalid request data' },
+        { status: 400 }
+      );
+    }
+
+    const { timeSlots } = validation.data;
     
+    // Prepare checkout data for LemonSqueezy
     const checkoutData = {
       data: {
         type: 'checkouts',
         attributes: {
-          store_id: process.env.LEMONSQUEEZY_STORE_ID,
+          store_id: env.LEMONSQUEEZY_STORE_ID,
           variant_id: variantId,
           product_options: {
-            redirect_url: `${process.env.NEXT_PUBLIC_APP_URL}/payment/success`,
+            redirect_url: `${env.NEXT_PUBLIC_APP_URL}/payment/success`,
           },
           checkout_data: {
-            email: customData.userEmail,
-            name: customData.userName
+            email: customData.userEmail
           }
         },
         relationships: {
           store: {
             data: {
               type: 'stores',
-              id: process.env.LEMONSQUEEZY_STORE_ID
+              id: env.LEMONSQUEEZY_STORE_ID
             }
           },
           variant: {
             data: {
               type: 'variants',
-              id: variantId
+              id: String(variantId)
             }
-          },
-          
+          }
         }
       }
     };
 
+    // Call LemonSqueezy API
     const response = await axios.post(
       'https://api.lemonsqueezy.com/v1/checkouts',
       checkoutData,
       {
         headers: {
-          'Authorization': `Bearer ${process.env.LEMONSQUEEZY_API_KEY}`,
-          'Content-Type': 'application/json',
-          'Accept': 'application/json'
+          'Accept': 'application/vnd.api+json',
+          'Content-Type': 'application/vnd.api+json',
+          'Authorization': `Bearer ${env.LEMONSQUEEZY_API_KEY}`
         }
       }
     );
 
-    const orderId = response.data.data.id;
-    const identifierId = response.data.data.attributes.identifier;
+    // Extract checkout URL and order ID
+    const checkoutUrl = response.data?.data?.attributes?.url;
+    const orderId = response.data?.data?.id;
 
-    // Store with time slots
-    storeOrderId('1', orderId, timeSlots);
-
-    // Store everything in a single table
-    try {
-      const result = await updatePaymentStatus(
-        orderId,
-        PaymentStatus.PENDING,
-        {
-          identifier_id: identifierId
-        }
-      );
-      
-      if (!result.success) {
-        logger.warn({
-          flow: 'checkout',
-          stage: 'db_warning',
-          orderId,
-          error: result.error
-        }, '⚠️ No se pudo actualizar el estado del pago, pero se continuará con el checkout');
-      } else if (result.literalValue || result.minimal) {
-        logger.info({
-          flow: 'checkout',
-          stage: 'db_fallback',
-          orderId,
-          literalValue: result.literalValue,
-          minimal: result.minimal
-        }, '⚠️ Se usó un método alternativo para el registro del pago, pero se continuará con el checkout');
-      }
-    } catch (dbError) {
+    if (!checkoutUrl || !orderId) {
       logger.error({
         flow: 'checkout',
-        stage: 'db_error',
-        orderId,
-        error: dbError
-      }, '⚠️ Error updating payment status, but continuing with checkout');
+        operation: 'createCheckout',
+        stage: 'invalidResponse',
+        responseData: response.data
+      }, '❌ Invalid checkout response');
+      
+      return NextResponse.json(
+        { error: 'Failed to create checkout' },
+        { status: 500 }
+      );
     }
 
-    logger.info({
-      flow: 'checkout',
-      stage: 'created',
-      orderId,
-      timestamp: new Date().toISOString(),
-      checkoutUrl: response.data.data.attributes.url
-    }, '🛒 Checkout created with LemonSqueezy');
+    // Store the order ID in memory for this session
+    storeOrderId(orderId, timeSlots);
+
+    // Create initial payment status record
+    await updatePaymentStatus(orderId, PaymentStatus.PENDING);
 
     logger.info({
       flow: 'checkout',
-      stage: 'initialized',
-      orderId,
-      initialStatus: PaymentStatus.PENDING
-    }, '💳 Payment tracking initialized');
-
-    logger.info({
-      flow: 'checkout',
-      stage: 'stored_order_id',
+      operation: 'createCheckout',
+      status: 'success',
       orderId
-    }, '💾 OrderId guardado en el store global');
+    }, 'Checkout created successfully');
 
+    // Return the response in the expected format
     return NextResponse.json({
       checkoutUrl: response.data.data.attributes.url,
       orderId,
-      customData: validatedData.data.customData
+      customData: validation.data.customData
     });
 
   } catch (error) {
-    if (error instanceof AxiosError) {
-      console.error('LemonSqueezy error:', error.response?.data);
-      return NextResponse.json(
-        { 
-          error: 'Checkout creation failed',
-          details: error.response?.data 
-        },
-        { status: error.response?.status || 500 }
-      );
-    }
+    logger.error({
+      flow: 'checkout',
+      operation: 'createCheckout',
+      error: error instanceof Error ? error.message : String(error)
+    }, 'Error creating checkout');
     
     return NextResponse.json(
-      { error: 'Internal server error' },
+      { error: 'Failed to create checkout' },
       { status: 500 }
     );
   }

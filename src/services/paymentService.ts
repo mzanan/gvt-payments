@@ -1,5 +1,7 @@
 import axios from 'axios';
 import { getToken } from '@/lib/auth';
+import { env } from '@/config/env';
+import { logger } from '@/lib/logger';
 
 interface CheckoutParams {
   variantId: string | number;
@@ -10,31 +12,65 @@ interface CheckoutParams {
   cancelUrl?: string;
 }
 
+/**
+ * Creates a checkout session with the payment provider
+ * @param params - Checkout parameters
+ * @returns Checkout URL for redirection
+ */
 export const createCheckout = async (params: CheckoutParams) => {
   try {
+    // Get authentication token
     const token = await getToken();
     
+    logger.info({
+      flow: 'payment',
+      operation: 'createCheckout',
+      variantId: params.variantId
+    }, '🛒 Creating checkout session');
+    
+    // Call checkout API
     const response = await axios.post(
-      `${process.env.NEXT_PUBLIC_APP_URL}/api/checkout`,
+      `${env.NEXT_PUBLIC_APP_URL}/api/checkout`,
       params,
       {
         headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        }
+          Authorization: `Bearer ${token}`,
+        },
       }
     );
 
-    if (!response.data?.data?.attributes?.url) {
-      throw new Error('Invalid checkout response');
+    // Verify we got a valid URL in the response
+    const checkoutUrl = response.data?.data?.attributes?.url;
+    
+    if (!checkoutUrl || typeof checkoutUrl !== 'string' || !checkoutUrl.startsWith('http')) {
+      logger.error({
+        flow: 'payment',
+        operation: 'createCheckout',
+        error: 'invalidUrl',
+        responseStructure: JSON.stringify(response.data)
+      }, 'Invalid checkout URL received from server');
+      throw new Error('Invalid checkout URL received from server');
     }
 
-    return response.data.data.attributes.url;
+    logger.info({
+      flow: 'payment',
+      operation: 'createCheckout',
+      status: 'success'
+    }, 'Checkout created successfully');
+    
+    return {
+      checkoutUrl,
+      orderId: response.data?.data?.id
+    };
   } catch (error) {
-    if (axios.isAxiosError(error)) {
-      const errorMessage = error.response?.data?.error || 'Failed to create checkout';
-      throw new Error(errorMessage);
-    }
+    // Only log critical errors
+    logger.error({
+      flow: 'payment',
+      operation: 'createCheckout',
+      error: error instanceof Error ? error.message : String(error),
+      variantId: params.variantId
+    }, 'Error creating checkout');
+    
     throw error;
   }
 };
