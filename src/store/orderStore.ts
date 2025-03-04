@@ -2,8 +2,6 @@ import { logger } from '@/lib/logger';
 import { updatePaymentStatus } from '@/db/payment';
 import { PaymentStatus } from '@/types/payment';
 
-export const TIMEOUT_MINUTES = 15;
-
 export const orderIdStore: { 
     [lemonSqueezyId: string]: {
       orderId: string;
@@ -18,59 +16,17 @@ export const orderIdStore: {
       timestamp: Date.now(),
       timeSlots
     };
-
-    // Set timeout to clear the reservation and update payment status
-    setTimeout(async () => {
-      if (orderIdStore[lemonSqueezyId]) {
-        try {
-          // Actualizar el estado en la base de datos
-          const result = await updatePaymentStatus(orderId, PaymentStatus.TIMEOUT);
-          
-          // Eliminar del store independientemente del resultado de la BD
-          delete orderIdStore[lemonSqueezyId];
-          
-          if (!result.success) {
-            logger.warn({
-              flow: 'reservation',
-              stage: 'timeout_warning',
-              orderId,
-              timeSlots,
-              error: result.error
-            }, '⚠️ No se pudo actualizar el estado a TIMEOUT pero los slots fueron liberados');
-          } else {
-            logger.info({
-              flow: 'reservation',
-              stage: 'timeout',
-              orderId,
-              timeSlots,
-              status: PaymentStatus.TIMEOUT
-            }, '⏰ Reservation timeout - payment status updated and slots released');
-          }
-        } catch (error) {
-          // Aún eliminamos del store para liberar los slots
-          delete orderIdStore[lemonSqueezyId];
-          
-          logger.error({
-            flow: 'reservation',
-            stage: 'timeout_error',
-            orderId,
-            error
-          }, '❌ Error updating payment status on timeout, but slots were released');
-        }
-      }
-    }, TIMEOUT_MINUTES * 60 * 1000);
+    
+    logger.info({
+      flow: 'checkout',
+      stage: 'stored_order_id',
+      orderId
+    }, '💾 OrderId guardado en el store global');
   }
   
   export function getOrderId(lemonSqueezyId: string) {
     const order = orderIdStore[lemonSqueezyId];
     if (!order) return null;
-
-    // Check if the reservation has expired
-    if (Date.now() - order.timestamp > TIMEOUT_MINUTES * 60 * 1000) {
-      delete orderIdStore[lemonSqueezyId];
-      return null;
-    }
-
     return order.orderId;
   }
   

@@ -1,8 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server';
 import axios from 'axios';
 import { logger } from '@/lib/logger';
-import { updatePaymentStatus } from '@/db/payment';
+import { updatePaymentStatus, getPaymentStatus } from '@/db/payment';
 import { PaymentStatus } from '@/types/payment';
+
+// Cache para almacenar las últimas verificaciones y evitar consultas repetidas
+interface VerificationCache {
+  [orderId: string]: {
+    timestamp: number;
+    result: any;
+  }
+}
+
+// Tiempo mínimo entre verificaciones para el mismo orderId (5 minutos)
+const MIN_VERIFICATION_INTERVAL_MS = 5 * 60 * 1000;
+
+// Caché de verificaciones recientes
+const verificationsCache: VerificationCache = {};
 
 export async function GET(request: NextRequest) {
   try {
@@ -21,7 +35,27 @@ export async function GET(request: NextRequest) {
     // Verificación de formato
     const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(orderId);
     const isNumericId = /^\d+$/.test(orderId);
-   
+    
+    // Comprobamos si hay una verificación reciente en caché para este orderId
+    const cachedVerification = verificationsCache[orderId];
+    const now = Date.now();
+    
+    if (cachedVerification && (now - cachedVerification.timestamp) < MIN_VERIFICATION_INTERVAL_MS) {
+      logger.info({
+        flow: 'payment_verify',
+        stage: 'cache_hit',
+        orderId,
+        cacheAge: Math.round((now - cachedVerification.timestamp) / 1000),
+        maxAge: MIN_VERIFICATION_INTERVAL_MS / 1000
+      }, '🔄 Usando verificación en caché (para evitar consultas excesivas)');
+      
+      return NextResponse.json({
+        ...cachedVerification.result,
+        fromCache: true,
+        cacheAge: Math.round((now - cachedVerification.timestamp) / 1000),
+        verifiedAt: new Date(cachedVerification.timestamp).toISOString()
+      });
+    }
     
     logger.info({
       flow: 'payment_verify',
@@ -39,7 +73,11 @@ export async function GET(request: NextRequest) {
         ? `https://api.lemonsqueezy.com/v1/orders/${orderId}`
         : `https://api.lemonsqueezy.com/v1/checkouts/${orderId}`;
         
-      console.log('🔍 Consultando endpoint:', endpoint);
+      logger.info({
+        flow: 'payment_verify',
+        stage: 'api_request',
+        endpoint
+      }, '🔄 Consultando endpoint LemonSqueezy');
       
       // Consultamos la API de LemonSqueezy para obtener el estado actualizado
       const response = await axios.get(endpoint, {
@@ -63,7 +101,6 @@ export async function GET(request: NextRequest) {
       const lemonSqueezyIdentifier = orderData.attributes.identifier;
       const lemonSqueezyNumericId = orderData.id;
       
-      console.log('📊 Estado actual en LemonSqueezy:', status);
       logger.info({
         flow: 'payment_verify',
         stage: 'status_retrieved',
@@ -101,16 +138,46 @@ export async function GET(request: NextRequest) {
         mappedStatus,
       }, `✅ Estado actualizado desde verificación: ${status} → ${mappedStatus}`);
       
-      return NextResponse.json({
+      // Preparamos la respuesta
+      const result = {
         success: true,
         orderId,
         originalStatus: status,
         mappedStatus,
         verifiedAt: new Date().toISOString()
-      });
+      };
+      
+      // Guardamos en caché
+      verificationsCache[orderId] = {
+        timestamp: now,
+        result
+      };
+      
+      // Registramos si el webhook dio respuesta o no
+      if (mappedStatus === PaymentStatus.PAID) {
+        logger.info({
+          flow: 'payment_verify',
+          stage: 'webhook_check',
+          orderId,
+          status: mappedStatus
+        }, '✅ WEBHOOK FUNCIONÓ: El pago ya está marcado como PAID');
+      } else {
+        // Verificamos si el pago debería estar pagado (verificamos primero en la BD)
+        const payment = await getPaymentStatus(orderId);
+        if (payment && payment.status === PaymentStatus.PENDING && status === 'paid') {
+          logger.warn({
+            flow: 'payment_verify',
+            stage: 'webhook_check',
+            orderId,
+            lemonsqueezy_status: status,
+            local_status: payment.status
+          }, '⚠️ WEBHOOK NO FUNCIONÓ: El pago está marcado como pagado en LemonSqueezy pero no localmente');
+        }
+      }
+      
+      return NextResponse.json(result);
       
     } catch (error) {
-      console.error('❌ Error verificando pago:', error);
       logger.error({
         flow: 'payment_verify',
         stage: 'error',
@@ -121,7 +188,6 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Failed to verify payment' }, { status: 500 });
     }
   } catch (error) {
-    console.error('❌ Error verificando pago:', error);
     logger.error({
       flow: 'payment_verify',
       stage: 'error',

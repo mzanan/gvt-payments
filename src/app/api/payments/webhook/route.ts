@@ -12,7 +12,13 @@ import { getOrderId } from '@/store/orderStore';
 
 export async function POST(request: NextRequest) {
   try {
-    logger.info({}, '🚨 WEBHOOK RECEIVED 🚨');
+    // Registrar que se recibió una solicitud al webhook
+    logger.info({
+      flow: 'webhook',
+      stage: 'request_received',
+      timestamp: new Date().toISOString(),
+      headers: Object.fromEntries([...request.headers.entries()].map(([key, value]) => [key, value]))
+    }, '🚨 WEBHOOK REQUEST RECEIVED 🚨');
     
     const body = await request.json();
     const event = body as WebhookEvent;
@@ -83,6 +89,15 @@ export async function POST(request: NextRequest) {
           numeric_id
         }, '❌ No se encontró ningún registro de pago por ningún método');
         
+        // Log específico para indicar que el webhook no logró procesar la respuesta
+        logger.error({
+          flow: 'webhook',
+          stage: 'webhook_response_failed',
+          reason: 'payment_not_found',
+          identifier_id,
+          numeric_id
+        }, '⛔ WEBHOOK NO DIO RESPUESTA: No se encontró registro de pago');
+        
         return NextResponse.json(
           { error: 'Payment record not found for the provided IDs' },
           { status: 404 }
@@ -141,6 +156,16 @@ export async function POST(request: NextRequest) {
         error: result.error
       }, '❌ Error actualizando estado de pago');
       
+      // Log específico para indicar que el webhook no logró procesar la respuesta
+      logger.error({
+        flow: 'webhook',
+        stage: 'webhook_response_failed',
+        reason: 'update_error',
+        orderId,
+        numeric_id,
+        identifier_id
+      }, '⛔ WEBHOOK NO DIO RESPUESTA: Error al actualizar el estado del pago');
+      
       return NextResponse.json(
         { error: 'Error updating payment status', details: result.error },
         { status: 500 }
@@ -157,6 +182,17 @@ export async function POST(request: NextRequest) {
       mappedStatus
     }, `✅ Registro actualizado con éxito: ${status} → ${mappedStatus}`);
     
+    // Log específico para indicar que el webhook dio respuesta correctamente
+    logger.info({
+      flow: 'webhook',
+      stage: 'webhook_response_success',
+      orderId,
+      numeric_id,
+      identifier_id,
+      original_status: status,
+      mapped_status: mappedStatus
+    }, '✅ WEBHOOK DIO RESPUESTA CORRECTAMENTE: Pago procesado y actualizado');
+    
     return NextResponse.json({ status: 'success' });
     
   } catch (error) {
@@ -165,6 +201,14 @@ export async function POST(request: NextRequest) {
       stage: 'error',
       error
     }, '❌ Error procesando webhook');
+    
+    // Log específico para indicar que el webhook no logró procesar la respuesta
+    logger.error({
+      flow: 'webhook',
+      stage: 'webhook_response_failed',
+      reason: 'exception',
+      error_message: error instanceof Error ? error.message : String(error)
+    }, '⛔ WEBHOOK NO DIO RESPUESTA: Error en el procesamiento');
     
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }

@@ -3,7 +3,7 @@ import axios, { AxiosError } from 'axios';
 import { checkoutRequestSchema } from '@/types/lemonsqueezy';
 import { updatePaymentStatus } from '@/db/payment';
 import { PaymentStatus } from '@/types/payment';
-import { storeOrderId, TIMEOUT_MINUTES } from '@/store/orderStore';
+import { storeOrderId } from '@/store/orderStore';
 import { logger } from '@/lib/logger';
 
 export async function POST(request: NextRequest) {
@@ -133,7 +133,6 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       checkoutUrl: response.data.data.attributes.url,
       orderId,
-      expiresIn: TIMEOUT_MINUTES * 60,
       customData: validatedData.data.customData
     });
 
