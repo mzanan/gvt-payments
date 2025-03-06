@@ -23,6 +23,17 @@ export async function middleware(request: NextRequest) {
     });
   }
 
+  // Add cache headers for GET requests that don't change often
+  if (request.method === 'GET' && 
+      request.nextUrl.pathname.startsWith('/api/payments/status/')) {
+    const response = NextResponse.next();
+    
+    // Add cache headers for status endpoints
+    response.headers.set('Cache-Control', 'public, max-age=30, stale-while-revalidate=60');
+    
+    return response;
+  }
+
   // Skip auth for public endpoints
   if (
     request.nextUrl.pathname === '/api/payments/webhook' ||

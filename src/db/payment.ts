@@ -1,12 +1,38 @@
 import { createClient } from '@supabase/supabase-js';
 import { logger } from '@/lib/logger';
 import { PaymentStatus } from '@/types/payment';
+import { memoize } from '@/utils/memoize';
 
 // Inicializar cliente Supabase
 const supabase = createClient(
   process.env.SUPABASE_URL || '',
   process.env.SUPABASE_SERVICE_ROLE_KEY || ''
 );
+
+// Tipo para las entradas del caché
+interface CacheEntry<T> {
+  data: T;
+  timestamp: number;
+}
+
+// Cache de pagos en memoria con TTL de 30 segundos
+const paymentStatusCache = new Map<string, CacheEntry<unknown>>();
+const CACHE_TTL = 30 * 1000; // 30 segundos
+
+// Función para limpiar entradas antiguas del caché
+const cleanupCache = () => {
+  const now = Date.now();
+  for (const [key, entry] of paymentStatusCache.entries()) {
+    if (now - entry.timestamp > CACHE_TTL) {
+      paymentStatusCache.delete(key);
+    }
+  }
+};
+
+// Configurar limpieza periódica del caché
+if (typeof setInterval !== 'undefined') {
+  setInterval(cleanupCache, 60 * 1000); // Limpiar cada minuto
+}
 
 export async function getPaymentStatus(orderId: string) {
   logger.info({
@@ -15,6 +41,21 @@ export async function getPaymentStatus(orderId: string) {
     stage: 'initiated',
     orderId
   }, '🔍 Buscando estado de pago');
+
+  // Verificar caché
+  const cacheKey = `payment_status_${orderId}`;
+  const cachedEntry = paymentStatusCache.get(cacheKey);
+  
+  if (cachedEntry && Date.now() - cachedEntry.timestamp < CACHE_TTL) {
+    logger.info({
+      flow: 'db_operation',
+      operation: 'getPaymentStatus',
+      stage: 'cache_hit',
+      orderId
+    }, '🚀 Usando datos en caché para el estado de pago');
+    
+    return cachedEntry.data;
+  }
 
   const { data, error } = await supabase
     .from('payments_status')
@@ -53,6 +94,12 @@ export async function getPaymentStatus(orderId: string) {
     orderId,
     status: data.status
   }, '✅ Estado de pago encontrado');
+
+  // Almacenar en caché
+  paymentStatusCache.set(cacheKey, {
+    data,
+    timestamp: Date.now()
+  });
 
   return data;
 }
@@ -125,6 +172,17 @@ export async function updatePaymentStatus(
         
         // Registramos el error pero no lo lanzamos para permitir que el flujo continúe
         return { success: false, error };
+      }
+
+      // Invalidar caché después de actualizar
+      const cacheKey = `payment_status_${orderId}`;
+      paymentStatusCache.delete(cacheKey);
+      
+      // También limpiar caché de la función memoizada
+      // Convierte a unknown primero para evitar errores de tipo
+      const memoizedFn = findPaymentByOrderId as unknown;
+      if (typeof (memoizedFn as { clearCache?: () => void }).clearCache === 'function') {
+        (memoizedFn as { clearCache: () => void }).clearCache();
       }
 
       logger.info({
@@ -375,31 +433,49 @@ export async function findPendingPayments() {
   }
 }
 
-/**
- * Finds a payment by order ID
- * @param orderId The order ID to search for
- * @returns Payment record or null if not found
- */
-export async function findPaymentByOrderId(orderId: string) {
-  try {
-    const { data, error } = await supabase
-      .from('payments')
-      .select('*')
-      .eq('order_id', orderId)
-      .single();
-    
-    if (error) {
-      throw error;
+// Versión memoizada de findPaymentByOrderId para evitar consultas repetidas
+export const findPaymentByOrderId = memoize(async (orderId: string) => {
+  logger.info({
+    flow: 'db_operation',
+    operation: 'findPaymentByOrderId',
+    stage: 'initiated',
+    orderId
+  }, '🔍 Buscando pago por ID de orden');
+
+  const { data, error } = await supabase
+    .from('payments_status')
+    .select('*')
+    .eq('order_id', orderId)
+    .single();
+
+  if (error) {
+    if (error.code === 'PGRST116') {
+      // No record found - not an error for this function
+      logger.info({
+        flow: 'db_operation',
+        operation: 'findPaymentByOrderId',
+        stage: 'not_found',
+        orderId
+      }, '⚪ No se encontró ningún pago');
+      return null;
     }
-    
-    return data;
-  } catch (error) {
-    logger.warn({
+
+    logger.error({
       flow: 'db_operation',
       operation: 'findPaymentByOrderId',
-      error: error instanceof Error ? error.message : String(error)
-    }, `Payment not found for order ID: ${orderId}`);
-    
-    return null;
+      stage: 'error',
+      orderId,
+      error
+    }, '❌ Error al buscar pago por ID de orden');
+    throw error;
   }
-}
+
+  logger.info({
+    flow: 'db_operation',
+    operation: 'findPaymentByOrderId',
+    stage: 'success',
+    orderId
+  }, '✅ Pago encontrado por ID de orden');
+
+  return data;
+}, (orderId: string) => `payment_${orderId}`);
