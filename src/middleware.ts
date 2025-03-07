@@ -39,6 +39,7 @@ export async function middleware(request: NextRequest) {
     request.nextUrl.pathname === '/api/payments/webhook' ||
     request.nextUrl.pathname === '/api/auth/token'
   ) {
+    console.log('PUBLIC ENDPOINT:', request.nextUrl.pathname);
     logger.debug({
       flow: 'middleware',
       operation: 'auth_check',

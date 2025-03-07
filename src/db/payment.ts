@@ -3,6 +3,12 @@ import { logger } from '@/lib/logger';
 import { PaymentStatus } from '@/types/payment';
 import { memoize } from '@/utils/memoize';
 
+/**
+ * Nota: Se eliminó la función retryOperation debido a problemas de tipado.
+ * Si se necesita reintentar operaciones, se recomienda implementar la lógica
+ * de reintento directamente en cada función que lo requiera.
+ */
+
 // Inicializar cliente Supabase
 const supabase = createClient(
   process.env.SUPABASE_URL || '',
@@ -54,54 +60,81 @@ export async function getPaymentStatus(orderId: string) {
       orderId
     }, '🚀 Usando datos en caché para el estado de pago');
     
+    // Mostrar el estado en cache para diagnóstico
+    console.log('PAYMENT STATUS - Estado en caché:', 
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      typeof cachedEntry.data === 'object' && cachedEntry.data ? (cachedEntry.data as any).status : null, 
+      'para orderId:', orderId);
+    
     return cachedEntry.data;
   }
 
-  const { data, error } = await supabase
-    .from('payments_status')
-    .select('*')
-    .eq('order_id', orderId)
-    .order('updated_at', { ascending: false })
-    .limit(1)
-    .single();
+  try {
+    const { data, error } = await supabase
+      .from('payments_status')
+      .select('*')
+      .eq('order_id', orderId)
+      .order('updated_at', { ascending: false })
+      .limit(1)
+      .single();
 
-  if (error) {
-    if (error.code === 'PGRST116') {
-      // No se encontró ningún registro
-      logger.warn({
+    if (error) {
+      if (error.code === 'PGRST116') {
+        // No se encontró ningún registro
+        logger.warn({
+          flow: 'db_operation',
+          operation: 'getPaymentStatus',
+          stage: 'not_found',
+          orderId
+        }, '⚠️ Estado de pago no encontrado');
+        
+        console.log('PAYMENT STATUS - No se encontró estado para orderId:', orderId);
+        return null;
+      }
+
+      logger.error({
         flow: 'db_operation',
         operation: 'getPaymentStatus',
-        stage: 'not_found',
-        orderId
-      }, '⚠️ Estado de pago no encontrado');
-      return null;
+        stage: 'error',
+        orderId,
+        error
+      }, '❌ Error al buscar estado de pago');
+      
+      console.log('PAYMENT STATUS - Error al buscar estado:', error.message, 'para orderId:', orderId);
+      throw error;
     }
 
+    logger.info({
+      flow: 'db_operation',
+      operation: 'getPaymentStatus',
+      stage: 'found',
+      orderId,
+      status: data.status
+    }, '✅ Estado de pago encontrado');
+    
+    // Mostrar el estado encontrado en la base de datos para diagnóstico
+    console.log('PAYMENT STATUS - Estado encontrado en DB:', data.status, 'para orderId:', orderId, 'datos completos:', JSON.stringify(data));
+
+    // Almacenar en caché
+    paymentStatusCache.set(cacheKey, {
+      data,
+      timestamp: Date.now()
+    });
+
+    return data;
+  } catch (error) {
     logger.error({
       flow: 'db_operation',
       operation: 'getPaymentStatus',
-      stage: 'error',
+      stage: 'exception',
       orderId,
-      error
-    }, '❌ Error al buscar estado de pago');
+      error: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined
+    }, '❌ Excepción al buscar estado de pago');
+    
+    // Reenviar el error para que el llamador pueda manejarlo
     throw error;
   }
-
-  logger.info({
-    flow: 'db_operation',
-    operation: 'getPaymentStatus',
-    stage: 'found',
-    orderId,
-    status: data.status
-  }, '✅ Estado de pago encontrado');
-
-  // Almacenar en caché
-  paymentStatusCache.set(cacheKey, {
-    data,
-    timestamp: Date.now()
-  });
-
-  return data;
 }
 
 /**
@@ -380,56 +413,53 @@ export async function getPaymentStatusByLemonSqueezyId(lemonSqueezyId: string) {
  * Útil para asociar webhooks que llegan sin una referencia clara al order_id original
  */
 export async function findPendingPayments() {
-  try {
-    logger.info({
-      flow: 'db_operation',
-      operation: 'findPendingPayments',
-      stage: 'initiated'
-    }, '🔍 Buscando pagos pendientes');
+  logger.info({
+    flow: 'db_operation',
+    operation: 'findPendingPayments',
+    stage: 'initiated'
+  }, '🔍 Buscando pagos pendientes');
 
+  try {
     const { data, error } = await supabase
       .from('payments_status')
       .select('*')
       .eq('status', 'PENDING')
-      .is('numeric_id', null)  // Solo aquellos que aún no tienen numeric_id
-      .order('created_at', { ascending: false })
-      .limit(5);  // Limitamos a los 5 más recientes para reducir falsos positivos
+      .order('created_at', { ascending: false });
 
     if (error) {
       logger.error({
         flow: 'db_operation',
         operation: 'findPendingPayments',
         stage: 'error',
-        error
-      }, '❌ Error al buscar pagos pendientes');
+        error,
+        errorDetails: {
+          code: error.code,
+          message: error.message,
+          details: error.details
+        }
+      }, `❌ Error al buscar pagos pendientes: ${error.message}`);
       throw error;
-    }
-
-    if (!data || data.length === 0) {
-      logger.warn({
-        flow: 'db_operation',
-        operation: 'findPendingPayments',
-        stage: 'not_found'
-      }, '⚠️ No se encontraron pagos pendientes sin numeric_id');
-      return [];
     }
 
     logger.info({
       flow: 'db_operation',
       operation: 'findPendingPayments',
       stage: 'success',
-      count: data.length
-    }, `✅ Se encontraron ${data.length} pagos pendientes`);
+      count: data?.length || 0
+    }, `✅ Se encontraron ${data?.length || 0} pagos pendientes`);
 
-    return data;
+    return data || [];
   } catch (error) {
     logger.error({
       flow: 'db_operation',
       operation: 'findPendingPayments',
       stage: 'exception',
-      error
-    }, '💥 Excepción en findPendingPayments');
-    throw error;
+      error: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined
+    }, '❌ Excepción al buscar pagos pendientes');
+    
+    // En caso de error, devolver un arreglo vacío para no interrumpir el flujo
+    return [];
   }
 }
 
@@ -442,40 +472,58 @@ export const findPaymentByOrderId = memoize(async (orderId: string) => {
     orderId
   }, '🔍 Buscando pago por ID de orden');
 
-  const { data, error } = await supabase
-    .from('payments_status')
-    .select('*')
-    .eq('order_id', orderId)
-    .single();
+  try {
+    const { data, error } = await supabase
+      .from('payments_status')
+      .select('*')
+      .eq('order_id', orderId)
+      .single();
 
-  if (error) {
-    if (error.code === 'PGRST116') {
-      // No record found - not an error for this function
-      logger.info({
+    if (error) {
+      if (error.code === 'PGRST116') {
+        // No record found - not an error for this function
+        logger.info({
+          flow: 'db_operation',
+          operation: 'findPaymentByOrderId',
+          stage: 'not_found',
+          orderId
+        }, '⚪ No se encontró ningún pago');
+        return null;
+      }
+
+      logger.error({
         flow: 'db_operation',
         operation: 'findPaymentByOrderId',
-        stage: 'not_found',
-        orderId
-      }, '⚪ No se encontró ningún pago');
-      return null;
+        stage: 'error',
+        orderId,
+        error,
+        errorDetails: {
+          code: error.code,
+          message: error.message,
+          details: error.details
+        }
+      }, `❌ Error al buscar pago por ID de orden: ${error.message}`);
+      throw error;
     }
 
+    logger.info({
+      flow: 'db_operation',
+      operation: 'findPaymentByOrderId',
+      stage: 'success',
+      orderId
+    }, '✅ Pago encontrado por ID de orden');
+
+    return data;
+  } catch (error) {
     logger.error({
       flow: 'db_operation',
       operation: 'findPaymentByOrderId',
-      stage: 'error',
+      stage: 'exception',
       orderId,
-      error
-    }, '❌ Error al buscar pago por ID de orden');
+      error: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined
+    }, '❌ Excepción al buscar pago por ID');
+    
     throw error;
   }
-
-  logger.info({
-    flow: 'db_operation',
-    operation: 'findPaymentByOrderId',
-    stage: 'success',
-    orderId
-  }, '✅ Pago encontrado por ID de orden');
-
-  return data;
 }, (orderId: string) => `payment_${orderId}`);

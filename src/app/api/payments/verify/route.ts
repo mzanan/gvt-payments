@@ -118,7 +118,7 @@ export async function GET(request: NextRequest) {
       // Mapeamos el estado de LemonSqueezy a nuestro sistema
       let mappedStatus: PaymentStatus;
       
-      if (status === 'paid' || status === 'completed' || status === 'success') {
+      if (status === 'paid') {
         mappedStatus = PaymentStatus.PAID;
       } else if (status === 'refunded' || status === 'cancelled' || status === 'canceled' || status === 'void') {
         mappedStatus = PaymentStatus.VOID;
