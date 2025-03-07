@@ -12,12 +12,53 @@ interface WebhookData {
     custom_data?: {
       order_id?: string;
     };
+    event_name?: string;
   };
   data?: {
     id?: string;
     attributes?: {
       status?: string;
+      identifier?: string;
     };
+  };
+}
+
+// Variables para monitoreo del estado del webhook
+let lastWebhookReceivedAt: number | null = null;
+let webhookReceiveCount = 0;
+let webhookErrorCount = 0;
+
+// Verificar estado del webhook
+function checkWebhookHealth(): { isHealthy: boolean; details: string } {
+  const now = Date.now();
+  const MAX_TIME_WITHOUT_WEBHOOK = 24 * 60 * 60 * 1000; // 24 horas
+
+  if (!lastWebhookReceivedAt) {
+    return { 
+      isHealthy: false, 
+      details: 'No se ha recibido ningún webhook desde el inicio del servicio' 
+    };
+  }
+
+  const timeSinceLastWebhook = now - lastWebhookReceivedAt;
+  
+  if (timeSinceLastWebhook > MAX_TIME_WITHOUT_WEBHOOK) {
+    return { 
+      isHealthy: false, 
+      details: `Han pasado ${Math.floor(timeSinceLastWebhook / (60 * 60 * 1000))} horas desde el último webhook` 
+    };
+  }
+
+  if (webhookErrorCount > 5) {
+    return {
+      isHealthy: false,
+      details: `Se han detectado ${webhookErrorCount} errores en webhooks recientes`
+    };
+  }
+
+  return { 
+    isHealthy: true, 
+    details: `Último webhook recibido hace ${Math.floor(timeSinceLastWebhook / (60 * 1000))} minutos. Total recibidos: ${webhookReceiveCount}` 
   };
 }
 
@@ -28,7 +69,7 @@ function mapPaymentStatus(lsStatus: string): PaymentStatus {
   // Normalizar el estado a minúsculas para evitar problemas de sensibilidad a mayúsculas
   const normalizedStatus = (lsStatus || '').toLowerCase();
   
-  console.log(`WEBHOOK - Mapeando estado original: '${lsStatus}' (normalizado: '${normalizedStatus}')`);
+  console.log(`WEBHOOK - Mapeando estado: '${lsStatus}'`);
   
   // Mapeo de estados de LemonSqueezy a nuestros estados internos
   let mappedStatus: PaymentStatus;
@@ -36,31 +77,27 @@ function mapPaymentStatus(lsStatus: string): PaymentStatus {
   switch(normalizedStatus) {
     case 'pending':
       mappedStatus = PaymentStatus.PENDING;
-      console.log(`WEBHOOK - Estado mapeado a PaymentStatus.PENDING (${mappedStatus})`);
       break;
     case 'paid':
     case 'completed':
     case 'success':
       mappedStatus = PaymentStatus.PAID;
-      console.log(`WEBHOOK - Estado mapeado a PaymentStatus.PAID (${mappedStatus})`);
       break;
     case 'void':
     case 'cancelled':
     case 'canceled':
       mappedStatus = PaymentStatus.VOID;
-      console.log(`WEBHOOK - Estado mapeado a PaymentStatus.VOID (${mappedStatus})`);
       break;
     case 'refunded':
       mappedStatus = PaymentStatus.REFUNDED;
-      console.log(`WEBHOOK - Estado mapeado a PaymentStatus.REFUNDED (${mappedStatus})`);
       break;
     default:
       mappedStatus = PaymentStatus.PENDING;
-      console.log(`WEBHOOK - Estado desconocido '${lsStatus}', mapeado a PaymentStatus.PENDING (${mappedStatus}) por defecto`);
+      console.log(`WEBHOOK - Estado desconocido '${lsStatus}', mapeado a PENDING por defecto`);
       break;
   }
   
-  console.log(`WEBHOOK - Resultado final del mapeo: '${lsStatus}' -> PaymentStatus.${PaymentStatus[mappedStatus]} (${mappedStatus})`);
+  console.log(`WEBHOOK - Resultado del mapeo: '${lsStatus}' -> ${PaymentStatus[mappedStatus]}`);
   
   return mappedStatus;
 }
@@ -69,12 +106,20 @@ export async function POST(request: NextRequest) {
   // Iniciar un temporizador para detectar operaciones que tardan demasiado
   const requestStartTime = Date.now();
   
+  // Actualizar métricas de monitoreo
+  lastWebhookReceivedAt = Date.now();
+  webhookReceiveCount++;
+  
   try {
     console.log('WEBHOOK - Solicitud recibida');
     
     // Capturar headers originales para diagnóstico
     const headers = Object.fromEntries([...request.headers.entries()]);
-    console.log('WEBHOOK - Headers recibidos:', JSON.stringify(headers, null, 2));
+    console.log('WEBHOOK - Headers principales:', {
+      'x-event-name': headers['x-event-name'],
+      'content-type': headers['content-type'],
+      'user-agent': headers['user-agent']
+    });
     
     // Añadir un timeout para la operación de parsing del JSON
     let jsonData: WebhookData;
@@ -93,6 +138,8 @@ export async function POST(request: NextRequest) {
       }
     } catch (error) {
       console.log('WEBHOOK - Error crítico al procesar datos JSON:', error);
+      
+      // Responder con error
       return NextResponse.json({ 
         success: false, 
         error: 'Error al procesar payload del webhook',
@@ -100,35 +147,47 @@ export async function POST(request: NextRequest) {
       }, { status: 400 });
     }
     
-    console.log('WEBHOOK - Payload completo recibido:', JSON.stringify(jsonData, null, 2));
+    // Log reducido del payload para diagnóstico
+    console.log('WEBHOOK - Datos recibidos:', {
+      id: jsonData?.data?.id,
+      eventName: jsonData?.meta?.event_name || request.headers.get('x-event-name'),
+      status: jsonData?.data?.attributes?.status,
+      identifier: jsonData?.data?.attributes?.identifier
+    });
     
-    // Destacar específicamente el estado crudo si existe
-    const rawStatus = jsonData?.data?.attributes?.status;
-    console.log('WEBHOOK - Estado crudo recibido:', rawStatus);
+    // Obtener el event_name desde meta o desde headers
+    const eventNameFromPayload = jsonData?.meta?.event_name;
+    const eventNameFromHeader = request.headers.get('x-event-name');
+    const eventName = eventNameFromPayload || eventNameFromHeader;
     
-    const eventName = request.headers.get('x-event-name');
-    console.log('WEBHOOK - Evento:', eventName);
-    
-    // Solo procesar eventos de tipo order_created
-    if (eventName !== 'order_created') {
+    // Solo procesar eventos de tipo order_created o si el eventName no está especificado
+    if (eventName && eventName !== 'order_created') {
       console.log('WEBHOOK - Ignorando evento no-order:', eventName);
-      return NextResponse.json({ success: true });
+      return NextResponse.json({ 
+        success: true, 
+        message: 'Evento ignorado (no es order_created)',
+        webhook_status: checkWebhookHealth()
+      });
     }
 
     // Extraer IDs del webhook
     const identifier_id = jsonData?.meta?.custom_data?.order_id || 
-                          jsonData?.data?.id;
+                          jsonData?.data?.attributes?.identifier;
     const numeric_id = jsonData?.data?.id;
     
     if (!identifier_id) {
       console.log('WEBHOOK - Error: Falta identificador de orden');
+      webhookErrorCount++;
       return NextResponse.json(
-        { error: 'Missing order identifier' },
+        { 
+          error: 'Missing order identifier',
+          webhook_status: checkWebhookHealth()
+        },
         { status: 400 }
       );
     }
     
-    console.log('WEBHOOK - IDs extraídos:', { identifier_id, numeric_id });
+    console.log('WEBHOOK - IDs:', { identifier_id, numeric_id });
 
     // Buscar pago por ID con manejo de errores y timeout
     let payment = null;
